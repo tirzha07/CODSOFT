@@ -1,0 +1,657 @@
+import React, { useState, useEffect, createContext, useContext } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, serverTimestamp } from 'firebase/firestore';
+import { PlusCircle, Calendar, CheckCircle, XCircle, Edit, Trash2, Loader2, User } from 'lucide-react';
+
+// Context for Firebase and User
+const FirebaseContext = createContext(null);
+
+// Utility function to format date
+const formatDate = (timestamp) => {
+  if (!timestamp) return 'No Deadline';
+  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+};
+
+// Modal Component
+const Modal = ({ isOpen, onClose, title, children }) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
+        <h2 className="text-2xl font-bold mb-4 text-gray-800">{title}</h2>
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 text-gray-500 hover:text-gray-700"
+        >
+          <XCircle size={24} />
+        </button>
+        {children}
+      </div>
+    </div>
+  );
+};
+
+// Add/Edit Project Modal
+const ProjectFormModal = ({ isOpen, onClose, onSave, projectToEdit }) => {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+
+  useEffect(() => {
+    if (projectToEdit) {
+      setName(projectToEdit.name);
+      setDescription(projectToEdit.description);
+    } else {
+      setName('');
+      setDescription('');
+    }
+  }, [projectToEdit, isOpen]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSave({ id: projectToEdit?.id, name, description });
+    onClose();
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={projectToEdit ? 'Edit Project' : 'Create New Project'}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label htmlFor="projectName" className="block text-sm font-medium text-gray-700">
+            Project Name
+          </label>
+          <input
+            type="text"
+            id="projectName"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+          />
+        </div>
+        <div>
+          <label htmlFor="projectDescription" className="block text-sm font-medium text-gray-700">
+            Description
+          </label>
+          <textarea
+            id="projectDescription"
+            rows="3"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          ></textarea>
+        </div>
+        <div className="flex justify-end space-x-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 transition duration-150 ease-in-out"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition duration-150 ease-in-out"
+          >
+            {projectToEdit ? 'Update Project' : 'Create Project'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+// Add/Edit Task Modal
+const TaskFormModal = ({ isOpen, onClose, onSave, projectId, taskToEdit }) => {
+  const [title, setTitle] = useState('');
+  const [deadline, setDeadline] = useState('');
+  const [assignedTo, setAssignedTo] = useState('');
+
+  useEffect(() => {
+    if (taskToEdit) {
+      setTitle(taskToEdit.title);
+      setAssignedTo(taskToEdit.assignedTo || '');
+      if (taskToEdit.deadline && taskToEdit.deadline.toDate) {
+        setDeadline(taskToEdit.deadline.toDate().toISOString().split('T')[0]);
+      } else if (taskToEdit.deadline) {
+        setDeadline(new Date(taskToEdit.deadline).toISOString().split('T')[0]);
+      } else {
+        setDeadline('');
+      }
+    } else {
+      setTitle('');
+      setDeadline('');
+      setAssignedTo('');
+    }
+  }, [taskToEdit, isOpen]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSave({
+      id: taskToEdit?.id,
+      projectId,
+      title,
+      deadline: deadline ? new Date(deadline) : null,
+      assignedTo,
+    });
+    onClose();
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={taskToEdit ? 'Edit Task' : 'Add New Task'}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label htmlFor="taskTitle" className="block text-sm font-medium text-gray-700">
+            Task Title
+          </label>
+          <input
+            type="text"
+            id="taskTitle"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+          />
+        </div>
+        <div>
+          <label htmlFor="taskDeadline" className="block text-sm font-medium text-gray-700">
+            Deadline
+          </label>
+          <input
+            type="date"
+            id="taskDeadline"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            value={deadline}
+            onChange={(e) => setDeadline(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor="taskAssignedTo" className="block text-sm font-medium text-gray-700">
+            Assigned To (Optional)
+          </label>
+          <input
+            type="text"
+            id="taskAssignedTo"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            value={assignedTo}
+            onChange={(e) => setAssignedTo(e.target.value)}
+          />
+        </div>
+        <div className="flex justify-end space-x-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 transition duration-150 ease-in-out"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition duration-150 ease-in-out"
+          >
+            {taskToEdit ? 'Update Task' : 'Add Task'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+// Task Item Component
+const TaskItem = ({ task, onToggleComplete, onEditTask, onDeleteTask }) => {
+  const isOverdue = task.deadline && new Date(task.deadline.toDate ? task.deadline.toDate() : task.deadline) < new Date() && !task.completed;
+
+  return (
+    <div className={`flex items-center justify-between p-3 rounded-md shadow-sm mb-2 transition duration-200 ease-in-out
+      ${task.completed ? 'bg-green-50' : 'bg-white'}
+      ${isOverdue && !task.completed ? 'border-l-4 border-red-500' : 'border-l-4 border-transparent'}
+    `}>
+      <div className="flex-1">
+        <h4 className={`font-medium ${task.completed ? 'line-through text-gray-500' : 'text-gray-800'}`}>
+          {task.title}
+        </h4>
+        <p className={`text-sm ${isOverdue && !task.completed ? 'text-red-600 font-semibold' : 'text-gray-600'}`}>
+          <Calendar size={14} className="inline-block mr-1" />
+          {formatDate(task.deadline)}
+          {isOverdue && !task.completed && <span className="ml-2 text-red-600">(Overdue)</span>}
+        </p>
+        {task.assignedTo && (
+          <p className="text-xs text-gray-500 mt-1">
+            <User size={12} className="inline-block mr-1" /> Assigned to: {task.assignedTo}
+          </p>
+        )}
+      </div>
+      <div className="flex items-center space-x-2">
+        <button
+          onClick={() => onToggleComplete(task.id, !task.completed)}
+          className={`p-2 rounded-full transition duration-150 ease-in-out
+            ${task.completed ? 'bg-green-200 text-green-700 hover:bg-green-300' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}
+          `}
+          title={task.completed ? 'Mark as Incomplete' : 'Mark as Complete'}
+        >
+          <CheckCircle size={20} />
+        </button>
+        <button
+          onClick={() => onEditTask(task)}
+          className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition duration-150 ease-in-out"
+          title="Edit Task"
+        >
+          <Edit size={20} />
+        </button>
+        <button
+          onClick={() => onDeleteTask(task.id)}
+          className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition duration-150 ease-in-out"
+          title="Delete Task"
+        >
+          <Trash2 size={20} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// Project Card Component
+const ProjectCard = ({ project, tasks, onAddTask, onToggleTaskComplete, onEditProject, onDeleteProject, onEditTask, onDeleteTask }) => {
+  const completedTasks = tasks.filter(task => task.completed).length;
+  const totalTasks = tasks.length;
+  const progress = totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+
+  return (
+    <div className="bg-white rounded-xl shadow-lg p-6 mb-8 border border-gray-200">
+      <div className="flex justify-between items-start mb-4">
+        <div>
+          <h3 className="text-3xl font-extrabold text-gray-900 mb-2">{project.name}</h3>
+          <p className="text-gray-700 text-lg">{project.description}</p>
+        </div>
+        <div className="flex space-x-2">
+          <button
+            onClick={() => onEditProject(project)}
+            className="p-2 rounded-full bg-yellow-100 text-yellow-600 hover:bg-yellow-200 transition duration-150 ease-in-out"
+            title="Edit Project"
+          >
+            <Edit size={20} />
+          </button>
+          <button
+            onClick={() => onDeleteProject(project.id)}
+            className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition duration-150 ease-in-out"
+            title="Delete Project"
+          >
+            <Trash2 size={20} />
+          </button>
+        </div>
+      </div>
+
+      <div className="mb-6">
+        <h4 className="text-lg font-semibold text-gray-800 mb-2">Progress: {progress}%</h4>
+        <div className="w-full bg-gray-200 rounded-full h-3">
+          <div
+            className="bg-blue-600 h-3 rounded-full transition-all duration-500 ease-out"
+            style={{ width: `${progress}%` }}
+          ></div>
+        </div>
+        <p className="text-sm text-gray-600 mt-1">{completedTasks} of {totalTasks} tasks completed</p>
+      </div>
+
+      <div className="mb-4">
+        <h4 className="text-xl font-semibold text-gray-800 mb-3">Tasks</h4>
+        {tasks.length === 0 ? (
+          <p className="text-gray-500 italic">No tasks yet. Add one to get started!</p>
+        ) : (
+          <div className="space-y-3">
+            {tasks.map(task => (
+              <TaskItem
+                key={task.id}
+                task={task}
+                onToggleComplete={onToggleTaskComplete}
+                onEditTask={onEditTask}
+                onDeleteTask={onDeleteTask}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={() => onAddTask(project.id)}
+        className="w-full py-3 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition duration-150 ease-in-out flex items-center justify-center space-x-2 shadow-md"
+      >
+        <PlusCircle size={20} />
+        <span>Add New Task</span>
+      </button>
+    </div>
+  );
+};
+
+// Main App Component
+export default function App() {
+  const [projects, setProjects] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [showAddProjectModal, setShowAddProjectModal] = useState(false);
+  const [showAddTaskModal, setShowAddTaskModal] = useState(false);
+  const [currentProjectIdForTask, setCurrentProjectIdForTask] = useState(null);
+  const [projectToEdit, setProjectToEdit] = useState(null);
+  const [taskToEdit, setTaskToEdit] = useState(null);
+
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  // Initialize Firebase and Auth
+  useEffect(() => {
+    try {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+      if (Object.keys(firebaseConfig).length === 0) {
+        console.error("Firebase config is missing. Please ensure __firebase_config is provided.");
+        setError("Firebase configuration is missing. Cannot connect to database.");
+        setLoading(false);
+        return;
+      }
+
+      const app = initializeApp(firebaseConfig);
+      const firestoreDb = getFirestore(app);
+      const firebaseAuth = getAuth(app);
+
+      setDb(firestoreDb);
+      setAuth(firebaseAuth);
+
+      const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+        if (user) {
+          setUserId(user.uid);
+        } else {
+          // Sign in anonymously if no user is logged in
+          try {
+            const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+            if (initialAuthToken) {
+              await signInWithCustomToken(firebaseAuth, initialAuthToken);
+            } else {
+              await signInAnonymously(firebaseAuth);
+            }
+            setUserId(firebaseAuth.currentUser?.uid || crypto.randomUUID()); // Fallback for anonymous
+          } catch (authError) {
+            console.error("Firebase Auth Error:", authError);
+            setError("Failed to authenticate. Some features may not work.");
+            setUserId(crypto.randomUUID()); // Use a random ID if auth fails
+          }
+        }
+        setIsAuthReady(true);
+      });
+
+      return () => unsubscribe();
+    } catch (initError) {
+      console.error("Firebase Initialization Error:", initError);
+      setError("Failed to initialize Firebase. Check console for details.");
+      setLoading(false);
+    }
+  }, []);
+
+  // Fetch data from Firestore
+  useEffect(() => {
+    if (!db || !isAuthReady || !userId) {
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    // Projects Listener
+    const projectsCollectionRef = collection(db, `artifacts/${__app_id}/users/${userId}/projects`);
+    const unsubscribeProjects = onSnapshot(projectsCollectionRef, (snapshot) => {
+      const projectsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProjects(projectsData);
+      setLoading(false);
+    }, (err) => {
+      console.error("Error fetching projects:", err);
+      setError("Failed to load projects.");
+      setLoading(false);
+    });
+
+    // Tasks Listener
+    const tasksCollectionRef = collection(db, `artifacts/${__app_id}/users/${userId}/tasks`);
+    const unsubscribeTasks = onSnapshot(tasksCollectionRef, (snapshot) => {
+      const tasksData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setTasks(tasksData);
+    }, (err) => {
+      console.error("Error fetching tasks:", err);
+      setError("Failed to load tasks.");
+    });
+
+    return () => {
+      unsubscribeProjects();
+      unsubscribeTasks();
+    };
+  }, [db, isAuthReady, userId]);
+
+  // Project CRUD Operations
+  const handleAddProject = async ({ name, description }) => {
+    if (!db || !userId) return;
+    try {
+      await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/projects`), {
+        name,
+        description,
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error("Error adding project:", e);
+      setError("Failed to add project.");
+    }
+  };
+
+  const handleUpdateProject = async ({ id, name, description }) => {
+    if (!db || !userId || !id) return;
+    try {
+      const projectRef = doc(db, `artifacts/${__app_id}/users/${userId}/projects`, id);
+      await updateDoc(projectRef, { name, description });
+      setProjectToEdit(null); // Clear edit state
+    } catch (e) {
+      console.error("Error updating project:", e);
+      setError("Failed to update project.");
+    }
+  };
+
+  const handleDeleteProject = async (projectId) => {
+    if (!db || !userId) return;
+    if (!window.confirm("Are you sure you want to delete this project and all its tasks?")) {
+        return; // Use a custom modal in a real app, but for this example, a simple confirm
+    }
+    try {
+      // Delete project document
+      await deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/projects`, projectId));
+
+      // Delete associated tasks
+      const q = query(collection(db, `artifacts/${__app_id}/users/${userId}/tasks`), where("projectId", "==", projectId));
+      const querySnapshot = await getDocs(q);
+      const deletePromises = [];
+      querySnapshot.forEach((taskDoc) => {
+        deletePromises.push(deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/tasks`, taskDoc.id)));
+      });
+      await Promise.all(deletePromises);
+
+    } catch (e) {
+      console.error("Error deleting project:", e);
+      setError("Failed to delete project.");
+    }
+  };
+
+  // Task CRUD Operations
+  const handleAddTask = async ({ projectId, title, deadline, assignedTo }) => {
+    if (!db || !userId) return;
+    try {
+      await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/tasks`), {
+        projectId,
+        title,
+        deadline,
+        assignedTo,
+        completed: false,
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error("Error adding task:", e);
+      setError("Failed to add task.");
+    }
+  };
+
+  const handleUpdateTask = async ({ id, projectId, title, deadline, assignedTo, completed }) => {
+    if (!db || !userId || !id) return;
+    try {
+      const taskRef = doc(db, `artifacts/${__app_id}/users/${userId}/tasks`, id);
+      await updateDoc(taskRef, {
+        projectId,
+        title,
+        deadline,
+        assignedTo,
+        completed: completed !== undefined ? completed : taskToEdit?.completed, // Preserve completed state if not explicitly passed
+      });
+      setTaskToEdit(null); // Clear edit state
+    } catch (e) {
+      console.error("Error updating task:", e);
+      setError("Failed to update task.");
+    }
+  };
+
+  const handleToggleTaskComplete = async (taskId, completed) => {
+    if (!db || !userId) return;
+    try {
+      const taskRef = doc(db, `artifacts/${__app_id}/users/${userId}/tasks`, taskId);
+      await updateDoc(taskRef, { completed });
+    } catch (e) {
+      console.error("Error toggling task complete status:", e);
+      setError("Failed to update task status.");
+    }
+  };
+
+  const handleDeleteTask = async (taskId) => {
+    if (!db || !userId) return;
+    try {
+      await deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/tasks`, taskId));
+    } catch (e) {
+      console.error("Error deleting task:", e);
+      setError("Failed to delete task.");
+    }
+  };
+
+  const openAddProjectModal = () => {
+    setProjectToEdit(null);
+    setShowAddProjectModal(true);
+  };
+
+  const openEditProjectModal = (project) => {
+    setProjectToEdit(project);
+    setShowAddProjectModal(true);
+  };
+
+  const openAddTaskModal = (projectId) => {
+    setCurrentProjectIdForTask(projectId);
+    setTaskToEdit(null);
+    setShowAddTaskModal(true);
+  };
+
+  const openEditTaskModal = (task) => {
+    setCurrentProjectIdForTask(task.projectId);
+    setTaskToEdit(task);
+    setShowAddTaskModal(true);
+  };
+
+  if (!isAuthReady || loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <Loader2 className="animate-spin text-blue-600" size={48} />
+        <p className="ml-4 text-lg text-gray-700">Loading projects and tasks...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-red-50">
+        <p className="text-red-700 text-lg font-semibold">Error: {error}</p>
+      </div>
+    );
+  }
+
+  return (
+    <FirebaseContext.Provider value={{ db, auth, userId }}>
+      <div className="min-h-screen bg-gray-50 font-sans text-gray-900 antialiased">
+        <style>
+          {`
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+          body { font-family: 'Inter', sans-serif; }
+          .shadow-md { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+          .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+          .rounded-xl { border-radius: 0.75rem; }
+          .transition-all { transition-property: all; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 150ms; }
+          `}
+        </style>
+        <div className="container mx-auto p-6 md:p-10">
+          <header className="flex flex-col md:flex-row justify-between items-center mb-10">
+            <h1 className="text-5xl font-extrabold text-blue-800 leading-tight mb-4 md:mb-0">
+              Project Dashboard
+            </h1>
+            <div className="flex items-center space-x-4">
+              <span className="text-gray-600 text-sm flex items-center">
+                <User size={16} className="mr-1" /> User ID: {userId}
+              </span>
+              <button
+                onClick={openAddProjectModal}
+                className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-lg hover:bg-blue-700 transition duration-300 ease-in-out flex items-center space-x-2 transform hover:scale-105"
+              >
+                <PlusCircle size={24} />
+                <span>New Project</span>
+              </button>
+            </div>
+          </header>
+
+          <main>
+            {projects.length === 0 && !loading ? (
+              <div className="text-center py-20 bg-white rounded-xl shadow-lg">
+                <p className="text-2xl text-gray-600 mb-4">No projects found.</p>
+                <p className="text-lg text-gray-500">Click "New Project" to get started!</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {projects.map(project => (
+                  <ProjectCard
+                    key={project.id}
+                    project={project}
+                    tasks={tasks.filter(task => task.projectId === project.id)}
+                    onAddTask={openAddTaskModal}
+                    onToggleTaskComplete={handleToggleTaskComplete}
+                    onEditProject={openEditProjectModal}
+                    onDeleteProject={handleDeleteProject}
+                    onEditTask={openEditTaskModal}
+                    onDeleteTask={handleDeleteTask}
+                  />
+                ))}
+              </div>
+            )}
+          </main>
+        </div>
+
+        <ProjectFormModal
+          isOpen={showAddProjectModal}
+          onClose={() => setShowAddProjectModal(false)}
+          onSave={projectToEdit ? handleUpdateProject : handleAddProject}
+          projectToEdit={projectToEdit}
+        />
+
+        <TaskFormModal
+          isOpen={showAddTaskModal}
+          onClose={() => setShowAddTaskModal(false)}
+          onSave={taskToEdit ? handleUpdateTask : handleAddTask}
+          projectId={currentProjectIdForTask}
+          taskToEdit={taskToEdit}
+        />
+      </div>
+    </FirebaseContext.Provider>
+  );
+}
