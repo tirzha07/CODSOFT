@@ -1,0 +1,768 @@
+import React, { useState, useEffect, createContext, useContext } from 'react';
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth,
+  signInAnonymously,
+  signInWithCustomToken,
+  onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut as firebaseSignOut
+} from 'firebase/auth';
+import {
+  getFirestore,
+  collection,
+  doc,
+  addDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  where,
+  serverTimestamp,
+  getDocs
+} from 'firebase/firestore';
+import {
+  PlusCircle,
+  Search,
+  User,
+  LogOut,
+  LogIn,
+  Edit,
+  Trash2,
+  MessageCircle,
+  Send,
+  Loader2,
+  XCircle,
+  Mail,
+  Lock,
+  BookOpen
+} from 'lucide-react';
+
+// Context for Firebase and User
+const FirebaseContext = createContext(null);
+
+// Utility function to format date
+const formatDate = (timestamp) => {
+  if (!timestamp) return '';
+  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+// Modal Component
+const Modal = ({ isOpen, onClose, title, children }) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
+        <h2 className="text-2xl font-bold mb-4 text-gray-800">{title}</h2>
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 text-gray-500 hover:text-gray-700"
+        >
+          <XCircle size={24} />
+        </button>
+        {children}
+      </div>
+    </div>
+  );
+};
+
+// Auth Modal Component
+const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
+  const { auth } = useContext(FirebaseContext);
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      if (isLogin) {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
+      onAuthSuccess();
+      onClose();
+    } catch (err) {
+      console.error("Auth error:", err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={isLogin ? 'Login' : 'Register'}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+            Email
+          </label>
+          <div className="mt-1 relative rounded-md shadow-sm">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <Mail size={20} className="text-gray-400" />
+            </div>
+            <input
+              type="email"
+              id="email"
+              className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </div>
+        </div>
+        <div>
+          <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+            Password
+          </label>
+          <div className="mt-1 relative rounded-md shadow-sm">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <Lock size={20} className="text-gray-400" />
+            </div>
+            <input
+              type="password"
+              id="password"
+              className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </div>
+        </div>
+        {error && <p className="text-red-600 text-sm">{error}</p>}
+        <div className="flex justify-end space-x-3">
+          <button
+            type="button"
+            onClick={() => setIsLogin(!isLogin)}
+            className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 transition duration-150 ease-in-out"
+          >
+            {isLogin ? 'Switch to Register' : 'Switch to Login'}
+          </button>
+          <button
+            type="submit"
+            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition duration-150 ease-in-out flex items-center justify-center"
+            disabled={loading}
+          >
+            {loading && <Loader2 className="animate-spin mr-2" size={20} />}
+            {isLogin ? 'Login' : 'Register'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+// Blog Post Form Modal
+const BlogPostFormModal = ({ isOpen, onClose, onSave, postToEdit }) => {
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (postToEdit) {
+      setTitle(postToEdit.title);
+      setContent(postToEdit.content);
+    } else {
+      setTitle('');
+      setContent('');
+    }
+  }, [postToEdit, isOpen]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    await onSave({ id: postToEdit?.id, title, content });
+    setLoading(false);
+    onClose();
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={postToEdit ? 'Edit Blog Post' : 'Create New Blog Post'}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label htmlFor="postTitle" className="block text-sm font-medium text-gray-700">
+            Title
+          </label>
+          <input
+            type="text"
+            id="postTitle"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+          />
+        </div>
+        <div>
+          <label htmlFor="postContent" className="block text-sm font-medium text-gray-700">
+            Content
+          </label>
+          <textarea
+            id="postContent"
+            rows="10"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            required
+          ></textarea>
+        </div>
+        <div className="flex justify-end space-x-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 transition duration-150 ease-in-out"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition duration-150 ease-in-out flex items-center justify-center"
+            disabled={loading}
+          >
+            {loading && <Loader2 className="animate-spin mr-2" size={20} />}
+            {postToEdit ? 'Update Post' : 'Publish Post'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+// Comment Form Component
+const CommentForm = ({ postId, onAddComment }) => {
+  const { userId } = useContext(FirebaseContext);
+  const [commentText, setCommentText] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!commentText.trim()) return;
+    setLoading(true);
+    await onAddComment(postId, commentText);
+    setCommentText('');
+    setLoading(false);
+  };
+
+  if (!userId) {
+    return <p className="text-gray-600 italic mt-4">Please log in to leave a comment.</p>;
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="mt-6 space-y-3">
+      <textarea
+        rows="3"
+        className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+        placeholder="Write your comment here..."
+        value={commentText}
+        onChange={(e) => setCommentText(e.target.value)}
+        required
+      ></textarea>
+      <div className="flex justify-end">
+        <button
+          type="submit"
+          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition duration-150 ease-in-out flex items-center justify-center"
+          disabled={loading}
+        >
+          {loading && <Loader2 className="animate-spin mr-2" size={20} />}
+          <Send size={20} className="mr-2" /> Submit Comment
+        </button>
+      </div>
+    </form>
+  );
+};
+
+// Blog Post List Component
+const BlogPostList = ({ posts, onSelectPost, onEditPost, onDeletePost, searchQuery }) => {
+  const { userId } = useContext(FirebaseContext);
+
+  const filteredPosts = posts.filter(post =>
+    post.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    post.content.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      {filteredPosts.length === 0 ? (
+        <div className="col-span-full text-center py-10 bg-white rounded-xl shadow-lg">
+          <p className="text-xl text-gray-600 italic">No blog posts found matching your search.</p>
+        </div>
+      ) : (
+        filteredPosts.map(post => (
+          <div key={post.id} className="bg-white rounded-xl shadow-lg p-6 flex flex-col justify-between">
+            <div>
+              <h3 className="text-2xl font-bold text-gray-900 mb-2 hover:text-blue-600 cursor-pointer transition-colors duration-200"
+                  onClick={() => onSelectPost(post.id)}>
+                {post.title}
+              </h3>
+              <p className="text-gray-700 mb-4 line-clamp-3">{post.content}</p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-500 mb-3">
+                By {post.authorName || 'Anonymous'} on {formatDate(post.createdAt)}
+              </p>
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={() => onSelectPost(post.id)}
+                  className="px-4 py-2 bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200 transition duration-150 ease-in-out flex items-center text-sm"
+                >
+                  <BookOpen size={16} className="mr-2" /> Read More
+                </button>
+                {userId === post.authorId && (
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => onEditPost(post)}
+                      className="p-2 rounded-full bg-yellow-100 text-yellow-600 hover:bg-yellow-200 transition duration-150 ease-in-out"
+                      title="Edit Post"
+                    >
+                      <Edit size={18} />
+                    </button>
+                    <button
+                      onClick={() => onDeletePost(post.id)}
+                      className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition duration-150 ease-in-out"
+                      title="Delete Post"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+};
+
+// Blog Post Detail Component
+const BlogPostDetail = ({ post, comments, onBack, onAddComment, onDeleteComment }) => {
+  const { userId } = useContext(FirebaseContext);
+
+  if (!post) {
+    return <div className="text-center py-20 bg-white rounded-xl shadow-lg">Post not found.</div>;
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-lg p-6 md:p-8">
+      <button
+        onClick={onBack}
+        className="mb-6 px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 transition duration-150 ease-in-out"
+      >
+        &larr; Back to all posts
+      </button>
+      <h1 className="text-4xl font-extrabold text-gray-900 mb-4">{post.title}</h1>
+      <p className="text-gray-600 text-sm mb-6">
+        By {post.authorName || 'Anonymous'} on {formatDate(post.createdAt)}
+      </p>
+      <div className="prose max-w-none text-gray-800 leading-relaxed mb-8">
+        {post.content.split('\n').map((paragraph, index) => (
+          <p key={index} className="mb-4">{paragraph}</p>
+        ))}
+      </div>
+
+      <h3 className="text-2xl font-bold text-gray-900 mb-4 flex items-center">
+        <MessageCircle size={24} className="mr-2" /> Comments ({comments.length})
+      </h3>
+      <div className="space-y-4 mb-6">
+        {comments.length === 0 ? (
+          <p className="text-gray-500 italic">No comments yet. Be the first to comment!</p>
+        ) : (
+          comments.map(comment => (
+            <div key={comment.id} className="bg-gray-50 p-4 rounded-md shadow-sm border border-gray-200">
+              <div className="flex justify-between items-center mb-2">
+                <p className="font-semibold text-gray-800">{comment.authorName || 'Anonymous'}</p>
+                <p className="text-xs text-gray-500">{formatDate(comment.createdAt)}</p>
+              </div>
+              <p className="text-gray-700">{comment.text}</p>
+              {userId === comment.authorId && (
+                <div className="flex justify-end mt-2">
+                  <button
+                    onClick={() => onDeleteComment(comment.id)}
+                    className="p-1 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition duration-150 ease-in-out"
+                    title="Delete Comment"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+
+      <CommentForm postId={post.id} onAddComment={onAddComment} />
+    </div>
+  );
+};
+
+// Main App Component
+export default function App() {
+  const [currentPage, setCurrentPage] = useState('list'); // 'list' or 'detail'
+  const [selectedPostId, setSelectedPostId] = useState(null);
+  const [posts, setPosts] = useState([]);
+  const [comments, setComments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [showPostModal, setShowPostModal] = useState(false);
+  const [postToEdit, setPostToEdit] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showAuthModal, setShowAuthModal] = useState(false);
+
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [userName, setUserName] = useState('Anonymous');
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  // Initialize Firebase and Auth
+  useEffect(() => {
+    try {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+      if (Object.keys(firebaseConfig).length === 0) {
+        console.error("Firebase config is missing. Please ensure __firebase_config is provided.");
+        setError("Firebase configuration is missing. Cannot connect to database.");
+        setLoading(false);
+        return;
+      }
+
+      const app = initializeApp(firebaseConfig);
+      const firestoreDb = getFirestore(app);
+      const firebaseAuth = getAuth(app);
+
+      setDb(firestoreDb);
+      setAuth(firebaseAuth);
+
+      const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+        if (user) {
+          setUserId(user.uid);
+          setUserName(user.email || 'Anonymous'); // Use email as name if available
+        } else {
+          // Sign in anonymously if no user is logged in
+          try {
+            const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+            if (initialAuthToken) {
+              await signInWithCustomToken(firebaseAuth, initialAuthToken);
+            } else {
+              await signInAnonymously(firebaseAuth);
+            }
+            setUserId(firebaseAuth.currentUser?.uid || crypto.randomUUID());
+            setUserName(firebaseAuth.currentUser?.email || 'Anonymous');
+          } catch (authError) {
+            console.error("Firebase Auth Error:", authError);
+            setError("Failed to authenticate. Some features may not work.");
+            setUserId(crypto.randomUUID()); // Fallback to random ID
+            setUserName('Anonymous');
+          }
+        }
+        setIsAuthReady(true);
+      });
+
+      return () => unsubscribe();
+    } catch (initError) {
+      console.error("Firebase Initialization Error:", initError);
+      setError("Failed to initialize Firebase. Check console for details.");
+      setLoading(false);
+    }
+  }, []);
+
+  // Fetch posts from Firestore
+  useEffect(() => {
+    if (!db || !isAuthReady) {
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    const postsCollectionRef = collection(db, `artifacts/${__app_id}/public/data/blogPosts`);
+    const unsubscribePosts = onSnapshot(postsCollectionRef, (snapshot) => {
+      const postsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setPosts(postsData);
+      setLoading(false);
+    }, (err) => {
+      console.error("Error fetching posts:", err);
+      setError("Failed to load blog posts.");
+      setLoading(false);
+    });
+
+    return () => unsubscribePosts();
+  }, [db, isAuthReady]);
+
+  // Fetch comments for selected post
+  useEffect(() => {
+    if (!db || !selectedPostId) {
+      setComments([]); // Clear comments if no post is selected
+      return;
+    }
+
+    const commentsCollectionRef = collection(db, `artifacts/${__app_id}/public/data/comments`);
+    const q = query(commentsCollectionRef, where("postId", "==", selectedPostId));
+    const unsubscribeComments = onSnapshot(q, (snapshot) => {
+      const commentsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setComments(commentsData);
+    }, (err) => {
+      console.error("Error fetching comments:", err);
+      setError("Failed to load comments.");
+    });
+
+    return () => unsubscribeComments();
+  }, [db, selectedPostId]);
+
+  // Blog Post CRUD Operations
+  const handleAddOrUpdatePost = async ({ id, title, content }) => {
+    if (!db || !userId) {
+      setError("Authentication required to publish/edit posts.");
+      return;
+    }
+    try {
+      if (id) {
+        // Update existing post
+        const postRef = doc(db, `artifacts/${__app_id}/public/data/blogPosts`, id);
+        await updateDoc(postRef, { title, content, updatedAt: serverTimestamp() });
+      } else {
+        // Add new post
+        await addDoc(collection(db, `artifacts/${__app_id}/public/data/blogPosts`), {
+          title,
+          content,
+          authorId: userId,
+          authorName: userName,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      setPostToEdit(null); // Clear edit state
+    } catch (e) {
+      console.error("Error adding/updating post:", e);
+      setError("Failed to publish/update post.");
+    }
+  };
+
+  const handleDeletePost = async (postId) => {
+    if (!db || !userId) return;
+    const postToDelete = posts.find(p => p.id === postId);
+    if (postToDelete && postToDelete.authorId !== userId) {
+      setError("You can only delete your own posts.");
+      return;
+    }
+    if (!window.confirm("Are you sure you want to delete this blog post and all its comments?")) {
+      return;
+    }
+    try {
+      // Delete post document
+      await deleteDoc(doc(db, `artifacts/${__app_id}/public/data/blogPosts`, postId));
+
+      // Delete associated comments
+      const q = query(collection(db, `artifacts/${__app_id}/public/data/comments`), where("postId", "==", postId));
+      const querySnapshot = await getDocs(q);
+      const deletePromises = [];
+      querySnapshot.forEach((commentDoc) => {
+        deletePromises.push(deleteDoc(doc(db, `artifacts/${__app_id}/public/data/comments`, commentDoc.id)));
+      });
+      await Promise.all(deletePromises);
+
+      if (selectedPostId === postId) {
+        setCurrentPage('list'); // Go back to list if current post is deleted
+        setSelectedPostId(null);
+      }
+    } catch (e) {
+      console.error("Error deleting post:", e);
+      setError("Failed to delete post.");
+    }
+  };
+
+  // Comment CRUD Operations
+  const handleAddComment = async (postId, text) => {
+    if (!db || !userId) {
+      setError("Authentication required to add comments.");
+      return;
+    }
+    try {
+      await addDoc(collection(db, `artifacts/${__app_id}/public/data/comments`), {
+        postId,
+        text,
+        authorId: userId,
+        authorName: userName,
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error("Error adding comment:", e);
+      setError("Failed to add comment.");
+    }
+  };
+
+  const handleDeleteComment = async (commentId) => {
+    if (!db || !userId) return;
+    const commentToDelete = comments.find(c => c.id === commentId);
+    if (commentToDelete && commentToDelete.authorId !== userId) {
+      setError("You can only delete your own comments.");
+      return;
+    }
+    if (!window.confirm("Are you sure you want to delete this comment?")) {
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, `artifacts/${__app_id}/public/data/comments`, commentId));
+    } catch (e) {
+      console.error("Error deleting comment:", e);
+      setError("Failed to delete comment.");
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (!auth) return;
+    try {
+      await firebaseSignOut(auth);
+      // After signOut, onAuthStateChanged will trigger and signInAnonymously will run
+      // This effectively logs the user out and logs them back in as anonymous
+    } catch (e) {
+      console.error("Error signing out:", e);
+      setError("Failed to sign out.");
+    }
+  };
+
+  const handleAuthSuccess = () => {
+    setError(null); // Clear any auth errors on success
+  };
+
+  if (!isAuthReady || loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <Loader2 className="animate-spin text-blue-600" size={48} />
+        <p className="ml-4 text-lg text-gray-700">Loading blog posts...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-red-50">
+        <p className="text-red-700 text-lg font-semibold">Error: {error}</p>
+      </div>
+    );
+  }
+
+  const currentPost = posts.find(post => post.id === selectedPostId);
+  const currentPostComments = comments.filter(comment => comment.postId === selectedPostId);
+
+  return (
+    <FirebaseContext.Provider value={{ db, auth, userId, userName }}>
+      <div className="min-h-screen bg-gray-50 font-sans text-gray-900 antialiased">
+        <style>
+          {`
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+          body { font-family: 'Inter', sans-serif; }
+          .shadow-md { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+          .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+          .rounded-xl { border-radius: 0.75rem; }
+          .transition-colors { transition-property: background-color, border-color, color, fill, stroke; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 150ms; }
+          .transition-transform { transition-property: transform; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 150ms; }
+          .prose p { margin-bottom: 1em; } /* Basic prose styling for readability */
+          .line-clamp-3 {
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+          }
+          `}
+        </style>
+        <div className="container mx-auto p-6 md:p-10">
+          <header className="flex flex-col md:flex-row justify-between items-center mb-10">
+            <h1 className="text-5xl font-extrabold text-blue-800 leading-tight mb-4 md:mb-0">
+              My Blog
+            </h1>
+            <div className="flex flex-wrap items-center justify-end gap-4">
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Search posts..."
+                  className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                <Search size={20} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              </div>
+              <button
+                onClick={() => { setPostToEdit(null); setShowPostModal(true); }}
+                className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-lg hover:bg-blue-700 transition duration-300 ease-in-out flex items-center space-x-2 transform hover:scale-105"
+              >
+                <PlusCircle size={24} />
+                <span>New Post</span>
+              </button>
+              {userId && (
+                <span className="text-gray-600 text-sm flex items-center">
+                  <User size={16} className="mr-1" /> {userName} ({userId})
+                </span>
+              )}
+              {auth?.currentUser?.isAnonymous ? (
+                <button
+                  onClick={() => setShowAuthModal(true)}
+                  className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition duration-300 ease-in-out flex items-center space-x-2"
+                >
+                  <LogIn size={20} />
+                  <span>Login / Register</span>
+                </button>
+              ) : (
+                <button
+                  onClick={handleSignOut}
+                  className="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg shadow-md hover:bg-red-700 transition duration-300 ease-in-out flex items-center space-x-2"
+                >
+                  <LogOut size={20} />
+                  <span>Sign Out</span>
+                </button>
+              )}
+            </div>
+          </header>
+
+          <main>
+            {currentPage === 'list' ? (
+              <BlogPostList
+                posts={posts}
+                onSelectPost={(id) => { setSelectedPostId(id); setCurrentPage('detail'); }}
+                onEditPost={(post) => { setPostToEdit(post); setShowPostModal(true); }}
+                onDeletePost={handleDeletePost}
+                searchQuery={searchQuery}
+              />
+            ) : (
+              <BlogPostDetail
+                post={currentPost}
+                comments={currentPostComments}
+                onBack={() => { setCurrentPage('list'); setSelectedPostId(null); }}
+                onAddComment={handleAddComment}
+                onDeleteComment={handleDeleteComment}
+              />
+            )}
+          </main>
+        </div>
+
+        <BlogPostFormModal
+          isOpen={showPostModal}
+          onClose={() => setShowPostModal(false)}
+          onSave={handleAddOrUpdatePost}
+          postToEdit={postToEdit}
+        />
+
+        <AuthModal
+          isOpen={showAuthModal}
+          onClose={() => setShowAuthModal(false)}
+          onAuthSuccess={handleAuthSuccess}
+        />
+      </div>
+    </FirebaseContext.Provider>
+  );
+}
